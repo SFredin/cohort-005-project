@@ -92,3 +92,23 @@ A Refund where the money couldn't be sent. The Refund Request stays approved, be
 **Watch Limit**:
 The amount of Watched time on a course past which a Student can no longer get a Refund, because they've had the course.
 _Avoid_: Watch cap, Viewing threshold
+
+### Discussion
+
+**Comment**:
+Something a person posts on a lesson for others on the course to read.
+_Avoid_: Post, Message
+
+**Question**:
+A Comment a Student posts directly on a lesson, not under another Comment. It is unanswered until the course's Instructor or a Platform Admin posts a Reply to it.
+_Avoid_: Thread, Top-level comment
+
+**Reply**:
+A Comment posted under another Comment. A Reply can't itself have Replies.
+_Avoid_: Answer, Response
+
+### Notifications
+
+**Notification**:
+A message kept in Cadence for one person, telling them something happened that concerns them, which they can see later in the app and mark as read.
+_Avoid_: Alert, Toast, Message (on its own)
