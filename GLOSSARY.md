@@ -110,5 +110,9 @@ _Avoid_: Answer, Response
 ### Notifications
 
 **Notification**:
-A message kept in Cadence for one person, telling them something happened that concerns them, which they can see later in the app and mark as read.
+A message kept in Cadence for one person, telling them something happened that concerns them, which they can see later in the app and mark as read. It is kept for 90 days.
 _Avoid_: Alert, Toast, Message (on its own)
+
+**Unread**:
+A Notification its recipient hasn't yet opened or cleared. The count of these is what the person is shown.
+_Avoid_: New, Unseen
