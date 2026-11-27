@@ -3,6 +3,7 @@ import type { Route } from "./+types/layout.app";
 import { Sidebar } from "~/components/sidebar";
 import { DevUI } from "~/components/dev-ui";
 import { Toaster } from "sonner";
+import { PrototypeNotificationsProvider } from "~/components/prototype-notifications";
 import { getCurrentUserId, getDevCountry } from "~/lib/session";
 import { getCountryTierInfo, COUNTRIES } from "~/lib/ppp";
 import { eq, and, or, sql, desc } from "drizzle-orm";
@@ -228,6 +229,10 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
   } = loaderData;
 
   return (
+    <PrototypeNotificationsProvider
+      currentUser={currentUser}
+      isTeamAdmin={userIsTeamAdmin}
+    >
     <div className="flex h-screen overflow-hidden">
       <Sidebar
         currentUser={currentUser}
@@ -246,5 +251,6 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
       />
       <Toaster position="bottom-right" richColors closeButton />
     </div>
+    </PrototypeNotificationsProvider>
   );
 }
