@@ -144,7 +144,11 @@ export function Sidebar({
           Cadence
         </NavLink>
         {currentUser && (
-          <NotificationBell unreadCount={unreadNotificationCount} />
+          // Keyed by person, so switching person drops the last one's list.
+          <NotificationBell
+            key={currentUser.id}
+            unreadCount={unreadNotificationCount}
+          />
         )}
       </div>
 

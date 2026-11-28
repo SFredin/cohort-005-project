@@ -321,8 +321,54 @@ export function countUnreadNotifications(
 }
 
 // ─── Marking read ───
-// Read is set once and never cleared, so each of these only touches Unread
-// Notifications.
+// Read at is set once and never cleared, so each of these only touches Unread
+// Notifications: marking a read one read again keeps the first time.
+
+/**
+ * Marks one Notification read for its own recipient. Returns false, and
+ * changes nothing, when the Notification is not `recipientId`'s.
+ */
+export function markNotificationRead(
+  db: Queryable,
+  notificationId: number,
+  recipientId: number,
+  now: Date
+): boolean {
+  const own = and(
+    eq(notifications.id, notificationId),
+    eq(notifications.recipientId, recipientId)
+  );
+  const notification = db
+    .select({ id: notifications.id })
+    .from(notifications)
+    .where(own)
+    .get();
+  if (!notification) return false;
+
+  db.update(notifications)
+    .set({ readAt: now.toISOString() })
+    .where(and(own, isNull(notifications.readAt)))
+    .run();
+
+  return true;
+}
+
+/** Marks every Unread Notification of one person read. */
+export function markAllNotificationsRead(
+  db: Queryable,
+  recipientId: number,
+  now: Date
+) {
+  db.update(notifications)
+    .set({ readAt: now.toISOString() })
+    .where(
+      and(
+        eq(notifications.recipientId, recipientId),
+        isNull(notifications.readAt)
+      )
+    )
+    .run();
+}
 
 /**
  * Marks read every Notification that references a Refund Request: each Platform
