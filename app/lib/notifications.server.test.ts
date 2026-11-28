@@ -6,6 +6,8 @@ import { NotificationKind, UserRole } from "~/db/schema";
 import {
   countUnreadNotifications,
   listNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
   notifyRefundRequestOpened,
 } from "./notifications.server";
 
@@ -150,6 +152,65 @@ describe("listing Notifications", () => {
       "Refund Request from Ben for Test Course",
       "Refund Request from Test User for Test Course",
     ]);
+  });
+});
+
+describe("marking one Notification read", () => {
+  it("takes it off the Unread count and leaves the person's others Unread", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    const ben = addPerson("Ben", UserRole.Student);
+    notifyRefundRequestOpened(db, addRefundRequest(base.user.id).id, NOW);
+    notifyRefundRequestOpened(db, addRefundRequest(ben.id).id, NOW);
+    const [newest] = listNotifications(db, pat.id, NOW);
+
+    expect(markNotificationRead(db, newest.id, pat.id, NOW)).toBe(true);
+
+    expect(countUnreadNotifications(db, pat.id, NOW)).toBe(1);
+    expect(
+      listNotifications(db, pat.id, NOW).map((notification) => [
+        notification.sentence,
+        notification.isUnread,
+      ])
+    ).toEqual([
+      ["Refund Request from Ben for Test Course", false],
+      ["Refund Request from Test User for Test Course", true],
+    ]);
+  });
+});
+
+describe("marking another person's Notification read", () => {
+  it("is refused and leaves it Unread", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    const sam = addPerson("Sam", UserRole.Admin);
+    notifyRefundRequestOpened(db, addRefundRequest(base.user.id).id, NOW);
+    const [pats] = listNotifications(db, pat.id, NOW);
+
+    expect(markNotificationRead(db, pats.id, sam.id, NOW)).toBe(false);
+
+    expect(countUnreadNotifications(db, pat.id, NOW)).toBe(1);
+    expect(countUnreadNotifications(db, sam.id, NOW)).toBe(1);
+  });
+
+  it("is refused for a Notification that doesn't exist", () => {
+    expect(markNotificationRead(db, 999, base.user.id, NOW)).toBe(false);
+  });
+});
+
+describe("marking all of a person's Notifications read", () => {
+  it("clears their Unread count and nobody else's", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    const sam = addPerson("Sam", UserRole.Admin);
+    const ben = addPerson("Ben", UserRole.Student);
+    notifyRefundRequestOpened(db, addRefundRequest(base.user.id).id, NOW);
+    notifyRefundRequestOpened(db, addRefundRequest(ben.id).id, NOW);
+
+    markAllNotificationsRead(db, pat.id, NOW);
+
+    expect(countUnreadNotifications(db, pat.id, NOW)).toBe(0);
+    expect(
+      listNotifications(db, pat.id, NOW).map((notification) => notification.isUnread)
+    ).toEqual([false, false]);
+    expect(countUnreadNotifications(db, sam.id, NOW)).toBe(2);
   });
 });
 
