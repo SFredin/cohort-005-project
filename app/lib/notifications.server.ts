@@ -1,7 +1,6 @@
 import { and, desc, eq, gte, isNull, lt, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
-import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import * as schema from "~/db/schema";
+import type { Queryable } from "~/db";
 import { commentPath } from "~/lib/comments";
 import {
   comments,
@@ -31,11 +30,6 @@ import {
 // A Notification's sentence and link are written once, when it is created. It
 // is never updated or removed because its subject changed. It expires 90 days
 // after it was created.
-
-type Db = BetterSQLite3Database<typeof schema>;
-type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
-/** A database or an open transaction on one. */
-export type Queryable = Db | Tx;
 
 type NewNotification = {
   recipientId: number;
@@ -91,7 +85,7 @@ export function notifyRefundRequestOpened(
   refundRequestId: number,
   now: Date
 ) {
-  const subject = tx
+  const refundRequest = tx
     .select({
       buyerId: users.id,
       buyerName: users.name,
@@ -104,14 +98,16 @@ export function notifyRefundRequestOpened(
     .where(eq(refunds.id, refundRequestId))
     .get();
 
-  if (!subject) {
+  if (!refundRequest) {
     throw new Error(`Refund Request ${refundRequestId} not found.`);
   }
 
   const platformAdmins = tx
     .select({ id: users.id })
     .from(users)
-    .where(and(eq(users.role, UserRole.Admin), ne(users.id, subject.buyerId)))
+    .where(
+      and(eq(users.role, UserRole.Admin), ne(users.id, refundRequest.buyerId))
+    )
     .all();
 
   createNotifications(
@@ -119,7 +115,7 @@ export function notifyRefundRequestOpened(
     platformAdmins.map((platformAdmin) => ({
       recipientId: platformAdmin.id,
       kind: NotificationKind.RefundRequestOpened,
-      sentence: `Refund Request from ${subject.buyerName} for ${subject.courseTitle}`,
+      sentence: `Refund Request from ${refundRequest.buyerName} for ${refundRequest.courseTitle}`,
       link: "/admin/refunds",
       refundRequestId,
     })),
@@ -136,7 +132,7 @@ export function notifyRefundRequestDecided(
   refundRequestId: number,
   now: Date
 ) {
-  const subject = tx
+  const refundRequest = tx
     .select({
       status: refunds.status,
       deciderId: refunds.resolvedByUserId,
@@ -150,27 +146,27 @@ export function notifyRefundRequestDecided(
     .where(eq(refunds.id, refundRequestId))
     .get();
 
-  if (!subject) {
+  if (!refundRequest) {
     throw new Error(`Refund Request ${refundRequestId} not found.`);
   }
-  if (subject.status === RefundStatus.Open) {
+  if (refundRequest.status === RefundStatus.Open) {
     throw new Error(`Refund Request ${refundRequestId} has not been decided.`);
   }
 
   // A Platform Admin who decides their own Refund Request already knows.
-  if (subject.deciderId === subject.buyerId) return;
+  if (refundRequest.deciderId === refundRequest.buyerId) return;
 
   const outcome =
-    subject.status === RefundStatus.Approved ? "approved" : "declined";
+    refundRequest.status === RefundStatus.Approved ? "approved" : "declined";
 
   createNotifications(
     tx,
     [
       {
-        recipientId: subject.buyerId,
+        recipientId: refundRequest.buyerId,
         kind: NotificationKind.RefundRequestDecided,
-        sentence: `Your Refund Request for ${subject.courseTitle} was ${outcome}`,
-        link: `/courses/${subject.courseSlug}`,
+        sentence: `Your Refund Request for ${refundRequest.courseTitle} was ${outcome}`,
+        link: `/courses/${refundRequest.courseSlug}`,
       },
     ],
     now
@@ -184,7 +180,7 @@ export function notifyRefundRequestDecided(
  * so the count includes it.
  */
 export function notifySeatClaimed(tx: Queryable, seatId: number, now: Date) {
-  const subject = tx
+  const claimedSeat = tx
     .select({
       teamLicenceId: purchases.id,
       teamAdminId: purchases.userId,
@@ -199,10 +195,10 @@ export function notifySeatClaimed(tx: Queryable, seatId: number, now: Date) {
     .where(eq(coupons.id, seatId))
     .get();
 
-  if (!subject) {
+  if (!claimedSeat) {
     throw new Error(`Claimed Seat ${seatId} not found.`);
   }
-  if (subject.studentId === subject.teamAdminId) return;
+  if (claimedSeat.studentId === claimedSeat.teamAdminId) return;
 
   const seats = tx
     .select({
@@ -210,16 +206,16 @@ export function notifySeatClaimed(tx: Queryable, seatId: number, now: Date) {
       claimed: sql<number>`count(${coupons.redeemedAt})`,
     })
     .from(coupons)
-    .where(eq(coupons.purchaseId, subject.teamLicenceId))
+    .where(eq(coupons.purchaseId, claimedSeat.teamLicenceId))
     .get();
 
   createNotifications(
     tx,
     [
       {
-        recipientId: subject.teamAdminId,
+        recipientId: claimedSeat.teamAdminId,
         kind: NotificationKind.SeatClaimed,
-        sentence: `${subject.studentName} claimed a Seat on ${subject.courseTitle} (${seats?.claimed ?? 0} of ${seats?.total ?? 0} claimed)`,
+        sentence: `${claimedSeat.studentName} claimed a Seat on ${claimedSeat.courseTitle} (${seats?.claimed ?? 0} of ${seats?.total ?? 0} claimed)`,
         link: "/team",
       },
     ],
@@ -228,21 +224,43 @@ export function notifySeatClaimed(tx: Queryable, seatId: number, now: Date) {
 }
 
 /**
- * A Student posted a Question: tells the course's Instructor. Call it in the
- * transaction that inserts the Comment. A Comment that is not a Question
- * creates nothing.
+ * Someone posted a Comment. Call it in the transaction that inserts the
+ * Comment. This is the one place that tells a Reply from a Comment posted
+ * directly on a lesson.
  */
-export function notifyQuestionPosted(
+export function notifyCommentPosted(
   tx: Queryable,
   commentId: number,
   now: Date
 ) {
-  const subject = tx
+  const comment = tx
+    .select({ parentId: comments.parentId })
+    .from(comments)
+    .where(eq(comments.id, commentId))
+    .get();
+
+  if (!comment) {
+    throw new Error(`Comment ${commentId} not found.`);
+  }
+
+  if (comment.parentId === null) {
+    notifyQuestionPosted(tx, commentId, now);
+  } else {
+    notifyReplyPosted(tx, commentId, now);
+  }
+}
+
+/**
+ * A Student posted a Question: tells the course's Instructor. A Comment the
+ * Instructor or a Platform Admin posts directly on a lesson is no Question and
+ * creates nothing.
+ */
+function notifyQuestionPosted(tx: Queryable, commentId: number, now: Date) {
+  const comment = tx
     .select({
       authorId: users.id,
       authorName: users.name,
       authorRole: users.role,
-      parentId: comments.parentId,
       lessonId: lessons.id,
       lessonTitle: lessons.title,
       courseSlug: courses.slug,
@@ -256,28 +274,25 @@ export function notifyQuestionPosted(
     .where(eq(comments.id, commentId))
     .get();
 
-  if (!subject) {
+  if (!comment) {
     throw new Error(`Comment ${commentId} not found.`);
   }
 
-  // Only a Question tells the Instructor: later Replies in its thread don't,
-  // and neither does a top-level Comment by the Instructor or a Platform Admin.
   const isQuestion =
-    subject.parentId === null &&
-    subject.authorId !== subject.instructorId &&
-    subject.authorRole !== UserRole.Admin;
+    comment.authorId !== comment.instructorId &&
+    comment.authorRole !== UserRole.Admin;
   if (!isQuestion) return;
 
   createNotifications(
     tx,
     [
       {
-        recipientId: subject.instructorId,
+        recipientId: comment.instructorId,
         kind: NotificationKind.QuestionPosted,
-        sentence: `${subject.authorName} asked a Question on ${subject.lessonTitle}`,
+        sentence: `${comment.authorName} asked a Question on ${comment.lessonTitle}`,
         link: commentPath({
-          courseSlug: subject.courseSlug,
-          lessonId: subject.lessonId,
+          courseSlug: comment.courseSlug,
+          lessonId: comment.lessonId,
           commentId,
         }),
       },
@@ -289,14 +304,13 @@ export function notifyQuestionPosted(
 /**
  * Someone posted a Reply: tells the author of the Comment it is under, unless
  * they wrote the Reply themselves or are a Student with no Enrollment on the
- * course any more. Call it in the transaction that inserts the Comment. A
- * Comment that is not a Reply creates nothing.
+ * course any more.
  */
-export function notifyReplyPosted(tx: Queryable, commentId: number, now: Date) {
+function notifyReplyPosted(tx: Queryable, commentId: number, now: Date) {
   const parent = alias(comments, "parent");
   const parentAuthor = alias(users, "parent_author");
 
-  const subject = tx
+  const reply = tx
     .select({
       replierId: users.id,
       replierName: users.name,
@@ -318,14 +332,16 @@ export function notifyReplyPosted(tx: Queryable, commentId: number, now: Date) {
     .where(eq(comments.id, commentId))
     .get();
 
-  if (!subject) return;
-  if (subject.replierId === subject.parentAuthorId) return;
+  if (!reply) {
+    throw new Error(`Reply ${commentId} not found.`);
+  }
+  if (reply.replierId === reply.parentAuthorId) return;
 
   // Staff on this course: its Instructor or a Platform Admin. What they post
   // directly on a lesson is a Comment, not a Question.
   const isParentAuthorStaff =
-    subject.parentAuthorId === subject.instructorId ||
-    subject.parentAuthorRole === UserRole.Admin;
+    reply.parentAuthorId === reply.instructorId ||
+    reply.parentAuthorRole === UserRole.Admin;
 
   // A Student with no Enrollment on the course has lost it (they needed one to
   // post) and can't open the lesson the link goes to. That covers every Lapsed
@@ -336,8 +352,8 @@ export function notifyReplyPosted(tx: Queryable, commentId: number, now: Date) {
       .from(enrollments)
       .where(
         and(
-          eq(enrollments.userId, subject.parentAuthorId),
-          eq(enrollments.courseId, subject.courseId)
+          eq(enrollments.userId, reply.parentAuthorId),
+          eq(enrollments.courseId, reply.courseId)
         )
       )
       .get();
@@ -348,12 +364,12 @@ export function notifyReplyPosted(tx: Queryable, commentId: number, now: Date) {
     tx,
     [
       {
-        recipientId: subject.parentAuthorId,
+        recipientId: reply.parentAuthorId,
         kind: NotificationKind.ReplyPosted,
-        sentence: `${subject.replierName} replied to your ${isParentAuthorStaff ? "Comment" : "Question"} on ${subject.lessonTitle}`,
+        sentence: `${reply.replierName} replied to your ${isParentAuthorStaff ? "Comment" : "Question"} on ${reply.lessonTitle}`,
         link: commentPath({
-          courseSlug: subject.courseSlug,
-          lessonId: subject.lessonId,
+          courseSlug: reply.courseSlug,
+          lessonId: reply.lessonId,
           commentId,
         }),
       },
@@ -427,32 +443,33 @@ export function countUnreadNotifications(
 // Notifications: marking a read one read again keeps the first time.
 
 /**
- * Marks one Notification read for its own recipient. Returns false, and
- * changes nothing, when the Notification is not `recipientId`'s.
+ * Marks one Notification read for its own recipient and returns its link, so
+ * the caller can go there once it is read. Returns null, and changes nothing,
+ * when the Notification is not `recipientId`'s.
  */
 export function markNotificationRead(
   db: Queryable,
   notificationId: number,
   recipientId: number,
   now: Date
-): boolean {
-  const own = and(
+): string | null {
+  const isRecipientsOwn = and(
     eq(notifications.id, notificationId),
     eq(notifications.recipientId, recipientId)
   );
   const notification = db
-    .select({ id: notifications.id })
+    .select({ link: notifications.link })
     .from(notifications)
-    .where(own)
+    .where(isRecipientsOwn)
     .get();
-  if (!notification) return false;
+  if (!notification) return null;
 
   db.update(notifications)
     .set({ readAt: now.toISOString() })
-    .where(and(own, isNull(notifications.readAt)))
+    .where(and(isRecipientsOwn, isNull(notifications.readAt)))
     .run();
 
-  return true;
+  return notification.link;
 }
 
 /** Marks every Unread Notification of one person read. */

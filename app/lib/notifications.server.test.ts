@@ -9,10 +9,9 @@ import {
   markAllNotificationsRead,
   markNotificationRead,
   markRefundRequestNotificationsRead,
-  notifyQuestionPosted,
+  notifyCommentPosted,
   notifyRefundRequestDecided,
   notifyRefundRequestOpened,
-  notifyReplyPosted,
   notifySeatClaimed,
 } from "./notifications.server";
 
@@ -327,7 +326,7 @@ describe("Question posted", () => {
     const lesson = addLesson("Generics");
     const question = addComment(lesson.id, base.user.id);
 
-    notifyQuestionPosted(db, question.id, NOW);
+    notifyCommentPosted(db, question.id, NOW);
 
     expect(listNotifications(db, base.instructor.id, NOW)).toEqual([
       {
@@ -347,7 +346,7 @@ describe("Question posted", () => {
     const lesson = addLesson("Generics");
     const question = addComment(lesson.id, base.user.id);
 
-    notifyQuestionPosted(db, question.id, NOW);
+    notifyCommentPosted(db, question.id, NOW);
 
     for (const person of [base.user, pat, ines]) {
       expect(listNotifications(db, person.id, NOW)).toEqual([]);
@@ -358,7 +357,7 @@ describe("Question posted", () => {
     const lesson = addLesson("Generics");
     const comment = addComment(lesson.id, base.instructor.id);
 
-    notifyQuestionPosted(db, comment.id, NOW);
+    notifyCommentPosted(db, comment.id, NOW);
 
     expect(listNotifications(db, base.instructor.id, NOW)).toEqual([]);
   });
@@ -369,7 +368,7 @@ describe("Question posted", () => {
     const question = addComment(lesson.id, base.user.id);
     const reply = addComment(lesson.id, ben.id, question.id);
 
-    notifyQuestionPosted(db, reply.id, NOW);
+    notifyCommentPosted(db, reply.id, NOW);
 
     expect(listNotifications(db, base.instructor.id, NOW)).toEqual([]);
   });
@@ -379,7 +378,7 @@ describe("Question posted", () => {
     const lesson = addLesson("Generics");
     const comment = addComment(lesson.id, pat.id);
 
-    notifyQuestionPosted(db, comment.id, NOW);
+    notifyCommentPosted(db, comment.id, NOW);
 
     expect(listNotifications(db, base.instructor.id, NOW)).toEqual([]);
   });
@@ -392,6 +391,14 @@ function enroll(studentId: number) {
     .run();
 }
 
+describe("a Comment that doesn't exist", () => {
+  it("is refused", () => {
+    expect(() => notifyCommentPosted(db, 999, NOW)).toThrow(
+      "Comment 999 not found."
+    );
+  });
+});
+
 describe("Reply posted", () => {
   it("tells a Student who replied to their Question and on which lesson, linking to the Reply", () => {
     enroll(base.user.id);
@@ -399,7 +406,7 @@ describe("Reply posted", () => {
     const question = addComment(lesson.id, base.user.id);
     const reply = addComment(lesson.id, base.instructor.id, question.id);
 
-    notifyReplyPosted(db, reply.id, NOW);
+    notifyCommentPosted(db, reply.id, NOW);
 
     expect(listNotifications(db, base.user.id, NOW)).toEqual([
       {
@@ -420,12 +427,12 @@ describe("Reply posted", () => {
     const adminComment = addComment(lesson.id, pat.id);
     enroll(base.user.id);
 
-    notifyReplyPosted(
+    notifyCommentPosted(
       db,
       addComment(lesson.id, base.user.id, instructorComment.id).id,
       NOW
     );
-    notifyReplyPosted(
+    notifyCommentPosted(
       db,
       addComment(lesson.id, base.user.id, adminComment.id).id,
       NOW
@@ -444,7 +451,7 @@ describe("Reply posted", () => {
     const question = addComment(lesson.id, base.user.id);
     const reply = addComment(lesson.id, base.user.id, question.id);
 
-    notifyReplyPosted(db, reply.id, NOW);
+    notifyCommentPosted(db, reply.id, NOW);
 
     expect(listNotifications(db, base.user.id, NOW)).toEqual([]);
   });
@@ -458,7 +465,7 @@ describe("Reply posted", () => {
     addComment(lesson.id, ben.id, question.id);
     const reply = addComment(lesson.id, base.instructor.id, question.id);
 
-    notifyReplyPosted(db, reply.id, NOW);
+    notifyCommentPosted(db, reply.id, NOW);
 
     expect(listNotifications(db, base.user.id, NOW)).toHaveLength(1);
     expect(listNotifications(db, ben.id, NOW)).toEqual([]);
@@ -477,7 +484,7 @@ describe("Reply posted", () => {
       .run();
     const reply = addComment(lesson.id, base.instructor.id, question.id);
 
-    notifyReplyPosted(db, reply.id, NOW);
+    notifyCommentPosted(db, reply.id, NOW);
 
     expect(listNotifications(db, base.user.id, NOW)).toEqual([]);
   });
@@ -524,7 +531,7 @@ describe("marking one Notification read", () => {
     notifyRefundRequestOpened(db, addRefundRequest(ben.id).id, NOW);
     const [newest] = listNotifications(db, pat.id, NOW);
 
-    expect(markNotificationRead(db, newest.id, pat.id, NOW)).toBe(true);
+    markNotificationRead(db, newest.id, pat.id, NOW);
 
     expect(countUnreadNotifications(db, pat.id, NOW)).toBe(1);
     expect(
@@ -539,6 +546,30 @@ describe("marking one Notification read", () => {
   });
 });
 
+describe("marking one Notification read to open it", () => {
+  it("answers with the link to what the Notification is about", () => {
+    const lesson = addLesson("Generics");
+    const question = addComment(lesson.id, base.user.id);
+    notifyCommentPosted(db, question.id, NOW);
+    const [notification] = listNotifications(db, base.instructor.id, NOW);
+
+    expect(
+      markNotificationRead(db, notification.id, base.instructor.id, NOW)
+    ).toBe(`/courses/test-course/lessons/${lesson.id}#comment-${question.id}`);
+  });
+
+  it("answers with the link again for one already read", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    notifyRefundRequestOpened(db, addRefundRequest(base.user.id).id, NOW);
+    const [notification] = listNotifications(db, pat.id, NOW);
+    markNotificationRead(db, notification.id, pat.id, NOW);
+
+    expect(markNotificationRead(db, notification.id, pat.id, NOW)).toBe(
+      "/admin/refunds"
+    );
+  });
+});
+
 describe("marking another person's Notification read", () => {
   it("is refused and leaves it Unread", () => {
     const pat = addPerson("Pat", UserRole.Admin);
@@ -546,14 +577,14 @@ describe("marking another person's Notification read", () => {
     notifyRefundRequestOpened(db, addRefundRequest(base.user.id).id, NOW);
     const [pats] = listNotifications(db, pat.id, NOW);
 
-    expect(markNotificationRead(db, pats.id, sam.id, NOW)).toBe(false);
+    expect(markNotificationRead(db, pats.id, sam.id, NOW)).toBeNull();
 
     expect(countUnreadNotifications(db, pat.id, NOW)).toBe(1);
     expect(countUnreadNotifications(db, sam.id, NOW)).toBe(1);
   });
 
   it("is refused for a Notification that doesn't exist", () => {
-    expect(markNotificationRead(db, 999, base.user.id, NOW)).toBe(false);
+    expect(markNotificationRead(db, 999, base.user.id, NOW)).toBeNull();
   });
 });
 
@@ -681,7 +712,7 @@ describe("the 90-day limit", () => {
     notifySeatClaimed(db, seat.id, NOW);
     const lesson = addLesson("Generics");
 
-    notifyQuestionPosted(
+    notifyCommentPosted(
       db,
       addComment(lesson.id, base.user.id).id,
       daysAfter(90, 1)
@@ -698,7 +729,7 @@ describe("the 90-day limit", () => {
     notifyRefundRequestOpened(db, addRefundRequest(base.user.id).id, NOW);
     const lesson = addLesson("Generics");
 
-    notifyQuestionPosted(
+    notifyCommentPosted(
       db,
       addComment(lesson.id, base.user.id).id,
       daysAfter(90)
