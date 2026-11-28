@@ -10,7 +10,10 @@ import {
   type RenderedComment,
 } from "~/components/comment-thread";
 import { MIN_COMMENT_LENGTH, MAX_COMMENT_LENGTH } from "~/lib/comments";
-import { notifyQuestionPosted } from "~/lib/notifications.server";
+import {
+  notifyQuestionPosted,
+  notifyReplyPosted,
+} from "~/lib/notifications.server";
 import { db } from "~/db";
 import {
   categories,
@@ -448,6 +451,8 @@ function createComment(
 
     if (comment.parentId === null) {
       notifyQuestionPosted(tx, comment.id, now);
+    } else {
+      notifyReplyPosted(tx, comment.id, now);
     }
 
     return comment;
