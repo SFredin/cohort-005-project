@@ -48,7 +48,8 @@ type RedeemResult =
 function redeemCoupon(
   code: string,
   userId: number,
-  userCountry: string
+  userCountry: string,
+  now: Date
 ): RedeemResult {
   const coupon = getCouponByCode(code);
   if (!coupon) {
@@ -99,8 +100,6 @@ function redeemCoupon(
   // The claim, the Enrollment and the Team Admin's Notification commit or roll
   // back together.
   const enrollment = db.transaction((tx) => {
-    const now = new Date();
-
     tx.update(coupons)
       .set({
         redeemedByUserId: userId,
@@ -209,7 +208,12 @@ export async function action({ params, request }: Route.ActionArgs) {
   }
 
   const userCountry = await resolveCountry(request);
-  const result = redeemCoupon(code, currentUserId, userCountry ?? "");
+  const result = redeemCoupon(
+    code,
+    currentUserId,
+    userCountry ?? "",
+    new Date()
+  );
 
   if (!result.ok) {
     return data({ error: result.error }, { status: 400 });

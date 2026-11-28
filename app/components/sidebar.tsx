@@ -42,7 +42,7 @@ interface SidebarProps {
   currentUser: CurrentUser | null;
   recentCourses?: RecentCourse[];
   isTeamAdmin?: boolean;
-  unreadNotificationCount?: number;
+  unreadNotificationCount: number;
 }
 
 interface NavItem {
@@ -119,7 +119,7 @@ export function Sidebar({
   currentUser,
   recentCourses = [],
   isTeamAdmin = false,
-  unreadNotificationCount = 0,
+  unreadNotificationCount,
 }: SidebarProps) {
   const currentUserRole = currentUser?.role ?? null;
   const [isDark, setIsDark] = useState(false);

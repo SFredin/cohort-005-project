@@ -1,5 +1,5 @@
-import { useState, type ReactNode } from "react";
-import { Link, useFetcher } from "react-router";
+import { useEffect, useState, type MouseEvent, type ReactNode } from "react";
+import { Link, useFetcher, useSubmit } from "react-router";
 import {
   Bell,
   CornerDownRight,
@@ -13,12 +13,10 @@ import {
   PopoverTrigger,
 } from "~/components/ui/popover";
 import { NotificationKind } from "~/db/schema";
+import { NOTIFICATIONS_PATH, NotificationIntent } from "~/lib/notifications";
 import type { NotificationForRecipient } from "~/lib/notifications.server";
 import { cn, formatRelativeTime } from "~/lib/utils";
 import type { loader as notificationsLoader } from "~/routes/api.notifications";
-
-/** The resource route the dropdown loads its list from and marks read on. */
-const NOTIFICATIONS_PATH = "/api/notifications";
 
 /** The badge stops counting here and shows "9+". */
 const BADGE_CAP = 9;
@@ -37,46 +35,17 @@ function unreadLabel(unreadCount: number) {
 
 /**
  * The bell at the top of the sidebar, with a red badge counting the person's
- * Unread Notifications. Clicking it opens a dropdown with their Notifications,
- * loaded at that moment. Render it only for a signed-in person.
+ * Unread Notifications. Clicking it opens a dropdown with their Notifications.
+ * Render it only for a signed-in person.
  *
- * `unreadCount` drives the badge and nothing else; the dropdown works from the
- * list it loads. Marking read reruns the layout loader, which supplies the new
- * count.
+ * `unreadCount` drives the badge. Marking read reruns the layout loader, which
+ * supplies the new count.
  */
 export function NotificationBell({ unreadCount }: { unreadCount: number }) {
   const [isOpen, setIsOpen] = useState(false);
-  const list = useFetcher<typeof notificationsLoader>();
-  const markRead = useFetcher();
-
-  const notifications = list.data?.notifications;
-  const hasUnread =
-    notifications?.some((notification) => notification.isUnread) ?? false;
-
-  // Opening loads the list and marks nothing read.
-  function handleOpenChange(nextIsOpen: boolean) {
-    setIsOpen(nextIsOpen);
-    if (nextIsOpen) list.load(NOTIFICATIONS_PATH);
-  }
-
-  function handleRowClick(notification: NotificationForRecipient) {
-    setIsOpen(false);
-    if (!notification.isUnread) return;
-    markRead.submit(
-      { intent: "mark-read", notificationId: notification.id },
-      { method: "post", action: NOTIFICATIONS_PATH }
-    );
-  }
-
-  function handleMarkAllRead() {
-    markRead.submit(
-      { intent: "mark-all-read" },
-      { method: "post", action: NOTIFICATIONS_PATH }
-    );
-  }
 
   return (
-    <Popover open={isOpen} onOpenChange={handleOpenChange}>
+    <Popover open={isOpen} onOpenChange={setIsOpen}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -104,43 +73,125 @@ export function NotificationBell({ unreadCount }: { unreadCount: number }) {
         sideOffset={8}
         className="w-96 overflow-hidden rounded-lg p-0 shadow-lg"
       >
-        <div className="flex items-center justify-between border-b px-3 py-2">
-          <span className="text-sm font-semibold">Notifications</span>
-          {hasUnread && (
-            <button
-              type="button"
-              onClick={handleMarkAllRead}
-              className="text-xs text-primary hover:underline"
-            >
-              Mark all as read
-            </button>
-          )}
-          {notifications && notifications.length > 0 && !hasUnread && (
-            <span className="text-xs text-muted-foreground">
-              You're all caught up
-            </span>
-          )}
-        </div>
-        {notifications && (
-          <div className="max-h-[26rem] divide-y overflow-y-auto">
-            {notifications.length === 0 ? (
-              <div className="px-6 py-10 text-center text-sm text-muted-foreground">
-                <Bell className="mx-auto mb-2 size-5 opacity-50" />
-                Nothing here yet
-              </div>
-            ) : (
-              notifications.map((notification) => (
-                <NotificationRow
-                  key={notification.id}
-                  notification={notification}
-                  onClick={() => handleRowClick(notification)}
-                />
-              ))
-            )}
-          </div>
-        )}
+        <NotificationDropdown
+          unreadCount={unreadCount}
+          onRowClick={() => setIsOpen(false)}
+        />
       </PopoverContent>
     </Popover>
+  );
+}
+
+/**
+ * What the open dropdown shows. It is mounted only while the dropdown is open,
+ * so every opening starts without a list and loads one; opening marks nothing
+ * read.
+ *
+ * The list is loaded again whenever the badge's count stops matching it, so a
+ * Notification that arrives while the dropdown is open shows up in it. The
+ * count is the only thing the poll carries; the list always comes from here.
+ */
+function NotificationDropdown({
+  unreadCount,
+  onRowClick,
+}: {
+  unreadCount: number;
+  onRowClick: () => void;
+}) {
+  const list = useFetcher<typeof notificationsLoader>();
+  const markRead = useFetcher();
+  const submit = useSubmit();
+
+  const notifications = list.data?.notifications;
+  const unreadInList = notifications?.filter(
+    (notification) => notification.isUnread
+  ).length;
+  const hasUnread = unreadInList !== undefined && unreadInList > 0;
+
+  const { load } = list;
+  useEffect(() => {
+    if (unreadInList !== unreadCount) load(NOTIFICATIONS_PATH);
+    // Only a new count asks again. `unreadInList` is left out so that a list
+    // which still disagrees after loading does not load in a loop.
+  }, [unreadCount, load]);
+
+  function handleRowClick(
+    event: MouseEvent<HTMLAnchorElement>,
+    notification: NotificationForRecipient
+  ) {
+    onRowClick();
+    if (!notification.isUnread) return;
+
+    const fields = { notificationId: notification.id };
+    const opensElsewhere =
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey;
+    if (opensElsewhere) {
+      // The browser opens the link in another tab or window; this one stays.
+      markRead.submit(
+        { ...fields, intent: NotificationIntent.MarkRead },
+        { method: "post", action: NOTIFICATIONS_PATH }
+      );
+      return;
+    }
+
+    // Marked read first, then on to the link: the action redirects there once
+    // the Notification is read, and not at all if marking it failed.
+    event.preventDefault();
+    submit(
+      { ...fields, intent: NotificationIntent.Open },
+      { method: "post", action: NOTIFICATIONS_PATH }
+    );
+  }
+
+  function handleMarkAllRead() {
+    markRead.submit(
+      { intent: NotificationIntent.MarkAllRead },
+      { method: "post", action: NOTIFICATIONS_PATH }
+    );
+  }
+
+  return (
+    <>
+      <div className="flex items-center justify-between border-b px-3 py-2">
+        <span className="text-sm font-semibold">Notifications</span>
+        {hasUnread && (
+          <button
+            type="button"
+            onClick={handleMarkAllRead}
+            className="text-xs text-primary hover:underline"
+          >
+            Mark all as read
+          </button>
+        )}
+        {notifications && notifications.length > 0 && !hasUnread && (
+          <span className="text-xs text-muted-foreground">
+            You're all caught up
+          </span>
+        )}
+      </div>
+      {notifications && (
+        <div className="max-h-[26rem] divide-y overflow-y-auto">
+          {notifications.length === 0 ? (
+            <div className="px-6 py-10 text-center text-sm text-muted-foreground">
+              <Bell className="mx-auto mb-2 size-5 opacity-50" />
+              Nothing here yet
+            </div>
+          ) : (
+            notifications.map((notification) => (
+              <NotificationRow
+                key={notification.id}
+                notification={notification}
+                onClick={(event) => handleRowClick(event, notification)}
+              />
+            ))
+          )}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -150,7 +201,7 @@ function NotificationRow({
   onClick,
 }: {
   notification: NotificationForRecipient;
-  onClick: () => void;
+  onClick: (event: MouseEvent<HTMLAnchorElement>) => void;
 }) {
   const { isUnread } = notification;
 

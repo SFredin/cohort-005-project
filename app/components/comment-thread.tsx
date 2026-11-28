@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { useFetcher } from "react-router";
+import { useEffect, useRef, useState } from "react";
+import { useFetcher, useLocation, useRevalidator } from "react-router";
 import { toast } from "sonner";
 import { MessageSquare, Pencil, Reply, Trash2 } from "lucide-react";
 import { Button } from "~/components/ui/button";
@@ -7,7 +7,11 @@ import { Card, CardContent } from "~/components/ui/card";
 import { Textarea } from "~/components/ui/textarea";
 import { UserAvatar } from "~/components/user-avatar";
 import { cn, formatRelativeTime } from "~/lib/utils";
-import { commentAnchorId, MAX_COMMENT_LENGTH } from "~/lib/comments";
+import {
+  commentAnchorId,
+  isCommentAnchorId,
+  MAX_COMMENT_LENGTH,
+} from "~/lib/comments";
 
 // Bodies arrive pre-rendered from the server (renderComment), because comments
 // are untrusted markdown and the sanitising renderer is server-only.
@@ -28,6 +32,45 @@ export type RenderedComment = {
   };
   replies: RenderedComment[];
 };
+
+/**
+ * Brings the Comment the URL targets into view when the page doesn't have it
+ * yet. A link that only changes the hash reruns no loader, so a Reply posted
+ * since this lesson page loaded is missing: the page's data is loaded again,
+ * once per navigation, and the Comment is scrolled to when it arrives.
+ *
+ * A Comment already on the page is left to the browser and React Router's
+ * scroll handling. One that never arrives (deleted, or never existed) leaves
+ * the page where it is.
+ */
+function useBringLinkedCommentIntoView(comments: RenderedComment[]) {
+  const { hash, key } = useLocation();
+  const { revalidate } = useRevalidator();
+  const awaitedAnchorId = useRef<string | null>(null);
+
+  useEffect(() => {
+    awaitedAnchorId.current = null;
+
+    const anchorId = hash.slice(1);
+    if (!isCommentAnchorId(anchorId)) return;
+    if (document.getElementById(anchorId)) return;
+
+    awaitedAnchorId.current = anchorId;
+    void revalidate();
+    // `key` is new on every navigation, so clicking the same link again asks
+    // again.
+  }, [hash, key, revalidate]);
+
+  useEffect(() => {
+    if (awaitedAnchorId.current === null) return;
+
+    const comment = document.getElementById(awaitedAnchorId.current);
+    if (!comment) return;
+
+    awaitedAnchorId.current = null;
+    comment.scrollIntoView();
+  }, [comments]);
+}
 
 function AuthorBadge({ label }: { label: string }) {
   return (
@@ -355,6 +398,8 @@ export function CommentThread({
   canPost: boolean;
   instructorName: string;
 }) {
+  useBringLinkedCommentIntoView(comments);
+
   return (
     <Card className="mb-8">
       <CardContent className="p-6">

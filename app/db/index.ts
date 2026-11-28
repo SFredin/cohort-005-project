@@ -48,7 +48,14 @@ function getDb() {
   return instance;
 }
 
-export const db = /* @__PURE__ */ new Proxy({} as ReturnType<typeof getDb>, {
+/** The database, as every module that takes one as its first argument sees it. */
+export type Db = ReturnType<typeof getDb>;
+/** An open transaction on the database. */
+export type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+/** A database or an open transaction on one. */
+export type Queryable = Db | Tx;
+
+export const db = /* @__PURE__ */ new Proxy({} as Db, {
   get(_target, prop) {
     const target = getDb();
     const value = Reflect.get(target, prop);

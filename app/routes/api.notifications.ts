@@ -1,4 +1,4 @@
-import { data } from "react-router";
+import { data, redirect } from "react-router";
 import { z } from "zod";
 import type { Route } from "./+types/api.notifications";
 import { requireUserId } from "~/lib/access.server";
@@ -8,6 +8,7 @@ import {
   markAllNotificationsRead,
   markNotificationRead,
 } from "~/lib/notifications.server";
+import { NotificationIntent } from "~/lib/notifications";
 import { parseFormData } from "~/lib/validation";
 
 // The bell's dropdown: the current person's Notifications, and marking them
@@ -15,10 +16,14 @@ import { parseFormData } from "~/lib/validation";
 
 const markReadSchema = z.discriminatedUnion("intent", [
   z.object({
-    intent: z.literal("mark-read"),
+    intent: z.literal(NotificationIntent.Open),
     notificationId: z.coerce.number().int(),
   }),
-  z.object({ intent: z.literal("mark-all-read") }),
+  z.object({
+    intent: z.literal(NotificationIntent.MarkRead),
+    notificationId: z.coerce.number().int(),
+  }),
+  z.object({ intent: z.literal(NotificationIntent.MarkAllRead) }),
 ]);
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -37,19 +42,26 @@ export async function action({ request }: Route.ActionArgs) {
     throw data("Invalid parameters", { status: 400 });
   }
 
-  if (parsed.data.intent === "mark-all-read") {
+  if (parsed.data.intent === NotificationIntent.MarkAllRead) {
     markAllNotificationsRead(db, currentUserId, new Date());
     return { ok: true };
   }
 
-  const isOwn = markNotificationRead(
+  const link = markNotificationRead(
     db,
     parsed.data.notificationId,
     currentUserId,
     new Date()
   );
-  if (!isOwn) {
+  if (link === null) {
     throw data("Notification not found", { status: 404 });
+  }
+
+  // The redirect is what puts navigating after marking read: the person only
+  // leaves for the link once the Notification is read. The link is the stored
+  // one, never one the request supplied.
+  if (parsed.data.intent === NotificationIntent.Open) {
+    throw redirect(link);
   }
 
   return { ok: true };

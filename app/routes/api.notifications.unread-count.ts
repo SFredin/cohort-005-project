@@ -1,6 +1,5 @@
-import { data } from "react-router";
 import type { Route } from "./+types/api.notifications.unread-count";
-import { getCurrentUserId } from "~/lib/session";
+import { requireUserId } from "~/lib/access.server";
 import { countUnreadNotifications } from "~/lib/notifications.server";
 import type { UnreadCountResponse } from "~/lib/unread-poll";
 import { db } from "~/db";
@@ -10,10 +9,7 @@ import { db } from "~/db";
  * (see `~/lib/unread-poll`); it never carries the list.
  */
 export async function loader({ request }: Route.LoaderArgs) {
-  const currentUserId = await getCurrentUserId(request);
-  if (!currentUserId) {
-    throw data("Unauthorized", { status: 401 });
-  }
+  const currentUserId = await requireUserId(request);
 
   const body: UnreadCountResponse = {
     unreadCount: countUnreadNotifications(db, currentUserId, new Date()),

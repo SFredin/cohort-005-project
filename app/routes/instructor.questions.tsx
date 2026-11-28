@@ -13,7 +13,7 @@ import { UserAvatar } from "~/components/user-avatar";
 import { AlertTriangle, CheckCircle2, ExternalLink } from "lucide-react";
 import { cn, daysSince, formatRelativeTime } from "~/lib/utils";
 import { MIN_COMMENT_LENGTH, MAX_COMMENT_LENGTH } from "~/lib/comments";
-import { notifyReplyPosted } from "~/lib/notifications.server";
+import { notifyCommentPosted } from "~/lib/notifications.server";
 import { parseFormData } from "~/lib/validation";
 import { db } from "~/db";
 import {
@@ -169,9 +169,7 @@ function createComment(
       .returning()
       .get();
 
-    if (comment.parentId !== null) {
-      notifyReplyPosted(tx, comment.id, now);
-    }
+    notifyCommentPosted(tx, comment.id, now);
 
     return comment;
   });
