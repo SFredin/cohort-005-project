@@ -8,6 +8,7 @@ import {
   listNotifications,
   notifyQuestionPosted,
   notifyRefundRequestOpened,
+  notifyReplyPosted,
   notifySeatClaimed,
 } from "./notifications.server";
 
@@ -292,6 +293,104 @@ describe("Question posted", () => {
     notifyQuestionPosted(db, comment.id, NOW);
 
     expect(listNotifications(db, base.instructor.id, NOW)).toEqual([]);
+  });
+});
+
+/** Gives a Student an Enrollment on the base course. */
+function enroll(studentId: number) {
+  db.insert(schema.enrollments)
+    .values({ userId: studentId, courseId: base.course.id })
+    .run();
+}
+
+describe("Reply posted", () => {
+  it("tells a Student who replied to their Question and on which lesson, linking to the Reply", () => {
+    enroll(base.user.id);
+    const lesson = addLesson("Generics");
+    const question = addComment(lesson.id, base.user.id);
+    const reply = addComment(lesson.id, base.instructor.id, question.id);
+
+    notifyReplyPosted(db, reply.id, NOW);
+
+    expect(listNotifications(db, base.user.id, NOW)).toEqual([
+      {
+        id: expect.any(Number),
+        kind: NotificationKind.ReplyPosted,
+        sentence: "Test Instructor replied to your Question on Generics",
+        link: `/courses/test-course/lessons/${lesson.id}#comment-${reply.id}`,
+        createdAt: NOW.toISOString(),
+        isUnread: true,
+      },
+    ]);
+  });
+
+  it("says \"your Comment\" to the course's Instructor and to a Platform Admin", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    const lesson = addLesson("Generics");
+    const instructorComment = addComment(lesson.id, base.instructor.id);
+    const adminComment = addComment(lesson.id, pat.id);
+    enroll(base.user.id);
+
+    notifyReplyPosted(
+      db,
+      addComment(lesson.id, base.user.id, instructorComment.id).id,
+      NOW
+    );
+    notifyReplyPosted(
+      db,
+      addComment(lesson.id, base.user.id, adminComment.id).id,
+      NOW
+    );
+
+    for (const staff of [base.instructor, pat]) {
+      expect(
+        listNotifications(db, staff.id, NOW).map((notification) => notification.sentence)
+      ).toEqual(["Test User replied to your Comment on Generics"]);
+    }
+  });
+
+  it("gives the author none for a Reply to their own Comment", () => {
+    enroll(base.user.id);
+    const lesson = addLesson("Generics");
+    const question = addComment(lesson.id, base.user.id);
+    const reply = addComment(lesson.id, base.user.id, question.id);
+
+    notifyReplyPosted(db, reply.id, NOW);
+
+    expect(listNotifications(db, base.user.id, NOW)).toEqual([]);
+  });
+
+  it("tells nobody but the author of the Comment replied to, not others who replied in the thread", () => {
+    const ben = addPerson("Ben", UserRole.Student);
+    enroll(base.user.id);
+    enroll(ben.id);
+    const lesson = addLesson("Generics");
+    const question = addComment(lesson.id, base.user.id);
+    addComment(lesson.id, ben.id, question.id);
+    const reply = addComment(lesson.id, base.instructor.id, question.id);
+
+    notifyReplyPosted(db, reply.id, NOW);
+
+    expect(listNotifications(db, base.user.id, NOW)).toHaveLength(1);
+    expect(listNotifications(db, ben.id, NOW)).toEqual([]);
+    expect(listNotifications(db, base.instructor.id, NOW)).toEqual([]);
+  });
+
+  it("gives a Lapsed Student none for a Reply on the course they lost", () => {
+    const lesson = addLesson("Generics");
+    const question = addComment(lesson.id, base.user.id);
+    db.insert(schema.lessonProgress)
+      .values({
+        userId: base.user.id,
+        lessonId: lesson.id,
+        status: schema.LessonProgressStatus.InProgress,
+      })
+      .run();
+    const reply = addComment(lesson.id, base.instructor.id, question.id);
+
+    notifyReplyPosted(db, reply.id, NOW);
+
+    expect(listNotifications(db, base.user.id, NOW)).toEqual([]);
   });
 });
 

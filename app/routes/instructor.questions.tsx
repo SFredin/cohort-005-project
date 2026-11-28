@@ -13,6 +13,7 @@ import { UserAvatar } from "~/components/user-avatar";
 import { AlertTriangle, CheckCircle2, ExternalLink } from "lucide-react";
 import { cn, daysSince, formatRelativeTime } from "~/lib/utils";
 import { MIN_COMMENT_LENGTH, MAX_COMMENT_LENGTH } from "~/lib/comments";
+import { notifyReplyPosted } from "~/lib/notifications.server";
 import { parseFormData } from "~/lib/validation";
 import { db } from "~/db";
 import {
@@ -115,11 +116,17 @@ function getCourseForLesson(lessonId: number) {
     .get();
 }
 
+/**
+ * Posts a Comment and, for a Reply, writes its Notification in the same
+ * transaction, so a failure in either leaves neither behind. This page only
+ * posts Replies.
+ */
 function createComment(
   userId: number,
   lessonId: number,
   parentId: number | null,
-  body: string
+  body: string,
+  now: Date
 ) {
   const trimmed = body.trim();
   if (trimmed.length < MIN_COMMENT_LENGTH) {
@@ -149,11 +156,25 @@ function createComment(
     }
   }
 
-  return db
-    .insert(comments)
-    .values({ userId, lessonId, parentId, body: trimmed })
-    .returning()
-    .get();
+  return db.transaction((tx) => {
+    const comment = tx
+      .insert(comments)
+      .values({
+        userId,
+        lessonId,
+        parentId,
+        body: trimmed,
+        createdAt: now.toISOString(),
+      })
+      .returning()
+      .get();
+
+    if (comment.parentId !== null) {
+      notifyReplyPosted(tx, comment.id, now);
+    }
+
+    return comment;
+  });
 }
 
 // A question sitting this long without an answer gets called out visually.
@@ -212,7 +233,8 @@ export async function action({ request }: Route.ActionArgs) {
       access.userId!,
       question.lessonId,
       question.id,
-      parsed.data.body
+      parsed.data.body,
+      new Date()
     );
   } catch (error) {
     if (error instanceof Error) {

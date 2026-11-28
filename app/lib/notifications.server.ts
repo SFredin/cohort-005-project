@@ -1,4 +1,5 @@
 import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/sqlite-core";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "~/db/schema";
 import { commentPath } from "~/lib/comments";
@@ -6,6 +7,7 @@ import {
   comments,
   coupons,
   courses,
+  enrollments,
   lessons,
   modules,
   notifications,
@@ -202,6 +204,82 @@ export function notifyQuestionPosted(
         recipientId: subject.instructorId,
         kind: NotificationKind.QuestionPosted,
         sentence: `${subject.authorName} asked a Question on ${subject.lessonTitle}`,
+        link: commentPath({
+          courseSlug: subject.courseSlug,
+          lessonId: subject.lessonId,
+          commentId,
+        }),
+      },
+    ],
+    now
+  );
+}
+
+/**
+ * Someone posted a Reply: tells the author of the Comment it is under, unless
+ * they wrote the Reply themselves or are a Student with no Enrollment on the
+ * course any more. Call it in the transaction that inserts the Comment. A
+ * Comment that is not a Reply creates nothing.
+ */
+export function notifyReplyPosted(tx: Queryable, commentId: number, now: Date) {
+  const parent = alias(comments, "parent");
+  const parentAuthor = alias(users, "parent_author");
+
+  const subject = tx
+    .select({
+      replierId: users.id,
+      replierName: users.name,
+      parentAuthorId: parentAuthor.id,
+      parentAuthorRole: parentAuthor.role,
+      instructorId: courses.instructorId,
+      courseId: courses.id,
+      lessonId: lessons.id,
+      lessonTitle: lessons.title,
+      courseSlug: courses.slug,
+    })
+    .from(comments)
+    .innerJoin(users, eq(comments.userId, users.id))
+    .innerJoin(parent, eq(comments.parentId, parent.id))
+    .innerJoin(parentAuthor, eq(parent.userId, parentAuthor.id))
+    .innerJoin(lessons, eq(comments.lessonId, lessons.id))
+    .innerJoin(modules, eq(lessons.moduleId, modules.id))
+    .innerJoin(courses, eq(modules.courseId, courses.id))
+    .where(eq(comments.id, commentId))
+    .get();
+
+  if (!subject) return;
+  if (subject.replierId === subject.parentAuthorId) return;
+
+  // Staff on this course: its Instructor or a Platform Admin. What they post
+  // directly on a lesson is a Comment, not a Question.
+  const isParentAuthorStaff =
+    subject.parentAuthorId === subject.instructorId ||
+    subject.parentAuthorRole === UserRole.Admin;
+
+  // A Student with no Enrollment on the course has lost it (they needed one to
+  // post) and can't open the lesson the link goes to. That covers every Lapsed
+  // Student, and one who lost their Enrollment before making any progress.
+  if (!isParentAuthorStaff) {
+    const enrollment = tx
+      .select({ id: enrollments.id })
+      .from(enrollments)
+      .where(
+        and(
+          eq(enrollments.userId, subject.parentAuthorId),
+          eq(enrollments.courseId, subject.courseId)
+        )
+      )
+      .get();
+    if (!enrollment) return;
+  }
+
+  createNotifications(
+    tx,
+    [
+      {
+        recipientId: subject.parentAuthorId,
+        kind: NotificationKind.ReplyPosted,
+        sentence: `${subject.replierName} replied to your ${isParentAuthorStaff ? "Comment" : "Question"} on ${subject.lessonTitle}`,
         link: commentPath({
           courseSlug: subject.courseSlug,
           lessonId: subject.lessonId,
