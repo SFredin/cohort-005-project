@@ -648,3 +648,63 @@ describe("deleting what a Notification refers to", () => {
     expect(listNotifications(db, pat.id, NOW)).toHaveLength(1);
   });
 });
+
+const DAY = 24 * 60 * 60 * 1000;
+/** `days` after NOW, plus `ms` milliseconds. */
+function daysAfter(days: number, ms = 0) {
+  return new Date(NOW.getTime() + days * DAY + ms);
+}
+
+describe("the 90-day limit", () => {
+  it("drops a Notification from the list once it was created more than 90 days ago", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    notifyRefundRequestOpened(db, addRefundRequest(base.user.id).id, NOW);
+
+    expect(listNotifications(db, pat.id, daysAfter(90))).toHaveLength(1);
+    expect(listNotifications(db, pat.id, daysAfter(90, 1))).toEqual([]);
+  });
+
+  it("drops a Notification from the Unread count once it was created more than 90 days ago", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    notifyRefundRequestOpened(db, addRefundRequest(base.user.id).id, NOW);
+
+    expect(countUnreadNotifications(db, pat.id, daysAfter(90))).toBe(1);
+    expect(countUnreadNotifications(db, pat.id, daysAfter(90, 1))).toBe(0);
+  });
+
+  it("deletes every person's expired Notifications when any Notification is created", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    const tess = addPerson("Tess", UserRole.Student);
+    const [seat] = addTeamLicence(tess.id, 1);
+    claimSeat(seat.id, base.user.id);
+    notifyRefundRequestOpened(db, addRefundRequest(base.user.id).id, NOW);
+    notifySeatClaimed(db, seat.id, NOW);
+    const lesson = addLesson("Generics");
+
+    notifyQuestionPosted(
+      db,
+      addComment(lesson.id, base.user.id).id,
+      daysAfter(90, 1)
+    );
+
+    // Asked as of the day they were created, when the cut-off hides nothing:
+    // the two are gone, not hidden.
+    expect(listNotifications(db, pat.id, NOW)).toEqual([]);
+    expect(listNotifications(db, tess.id, NOW)).toEqual([]);
+  });
+
+  it("keeps a Notification created exactly 90 days ago when another is created", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    notifyRefundRequestOpened(db, addRefundRequest(base.user.id).id, NOW);
+    const lesson = addLesson("Generics");
+
+    notifyQuestionPosted(
+      db,
+      addComment(lesson.id, base.user.id).id,
+      daysAfter(90)
+    );
+
+    expect(listNotifications(db, pat.id, daysAfter(90))).toHaveLength(1);
+    expect(countUnreadNotifications(db, pat.id, daysAfter(90))).toBe(1);
+  });
+});

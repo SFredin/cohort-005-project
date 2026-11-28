@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, lt, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "~/db/schema";
@@ -29,7 +29,8 @@ import {
 // convention).
 //
 // A Notification's sentence and link are written once, when it is created. It
-// is never updated or removed because its subject changed.
+// is never updated or removed because its subject changed. It expires 90 days
+// after it was created.
 
 type Db = BetterSQLite3Database<typeof schema>;
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -44,6 +45,19 @@ type NewNotification = {
   refundRequestId?: number;
 };
 
+const NOTIFICATION_LIFETIME_DAYS = 90;
+
+/**
+ * A Notification created before this has expired; one created exactly 90 days
+ * ago has not. Created at is always a UTC ISO string, so comparing the strings
+ * compares the times.
+ */
+function expiryCutOff(now: Date) {
+  return new Date(
+    now.getTime() - NOTIFICATION_LIFETIME_DAYS * 24 * 60 * 60 * 1000
+  ).toISOString();
+}
+
 /** The one place a Notification is written. Every create function ends here. */
 function createNotifications(
   tx: Queryable,
@@ -51,6 +65,12 @@ function createNotifications(
   now: Date
 ) {
   if (drafts.length === 0) return;
+
+  // Nothing runs on a timer, so creating a Notification is also when expired
+  // ones are deleted, for every recipient.
+  tx.delete(notifications)
+    .where(lt(notifications.createdAt, expiryCutOff(now)))
+    .run();
 
   tx.insert(notifications)
     .values(drafts.map((draft) => ({ ...draft, createdAt: now.toISOString() })))
@@ -354,11 +374,15 @@ export type NotificationForRecipient = {
 };
 
 /**
- * Which of a person's Notifications they can still see. `now` is here for the
- * 90-day limit, which nothing applies yet.
+ * Which of a person's Notifications they can still see: their own, less the
+ * expired ones. This cut-off is what makes the 90-day limit exact, since the
+ * purge only runs when a Notification is created.
  */
-function visibleTo(recipientId: number, _now: Date) {
-  return eq(notifications.recipientId, recipientId);
+function visibleTo(recipientId: number, now: Date) {
+  return and(
+    eq(notifications.recipientId, recipientId),
+    gte(notifications.createdAt, expiryCutOff(now))
+  );
 }
 
 /** A person's Notifications, read and Unread together, newest first. */
