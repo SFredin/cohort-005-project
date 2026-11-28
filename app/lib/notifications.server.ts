@@ -8,6 +8,7 @@ import {
   refunds,
   users,
   NotificationKind,
+  RefundStatus,
   UserRole,
 } from "~/db/schema";
 
@@ -99,6 +100,56 @@ export function notifyRefundRequestOpened(
   );
 }
 
+/**
+ * A Platform Admin approved or declined a Refund Request: tells the buyer.
+ * Call it in the decision's transaction, after the decision is recorded.
+ */
+export function notifyRefundRequestDecided(
+  tx: Queryable,
+  refundRequestId: number,
+  now: Date
+) {
+  const subject = tx
+    .select({
+      status: refunds.status,
+      deciderId: refunds.resolvedByUserId,
+      buyerId: purchases.userId,
+      courseTitle: courses.title,
+      courseSlug: courses.slug,
+    })
+    .from(refunds)
+    .innerJoin(purchases, eq(refunds.purchaseId, purchases.id))
+    .innerJoin(courses, eq(purchases.courseId, courses.id))
+    .where(eq(refunds.id, refundRequestId))
+    .get();
+
+  if (!subject) {
+    throw new Error(`Refund Request ${refundRequestId} not found.`);
+  }
+  if (subject.status === RefundStatus.Open) {
+    throw new Error(`Refund Request ${refundRequestId} has not been decided.`);
+  }
+
+  // A Platform Admin who decides their own Refund Request already knows.
+  if (subject.deciderId === subject.buyerId) return;
+
+  const outcome =
+    subject.status === RefundStatus.Approved ? "approved" : "declined";
+
+  createNotifications(
+    tx,
+    [
+      {
+        recipientId: subject.buyerId,
+        kind: NotificationKind.RefundRequestDecided,
+        sentence: `Your Refund Request for ${subject.courseTitle} was ${outcome}`,
+        link: `/courses/${subject.courseSlug}`,
+      },
+    ],
+    now
+  );
+}
+
 // ─── Reading ───
 
 export type NotificationForRecipient = {
@@ -153,4 +204,29 @@ export function countUnreadNotifications(
     .get();
 
   return result?.count ?? 0;
+}
+
+// ─── Marking read ───
+// Read is set once and never cleared, so each of these only touches Unread
+// Notifications.
+
+/**
+ * Marks read every Notification that references a Refund Request: each Platform
+ * Admin's "Refund Request opened", the decider's own included. They stay in
+ * each list as a record. Call it in the decision's transaction.
+ */
+export function markRefundRequestNotificationsRead(
+  tx: Queryable,
+  refundRequestId: number,
+  now: Date
+) {
+  tx.update(notifications)
+    .set({ readAt: now.toISOString() })
+    .where(
+      and(
+        eq(notifications.refundRequestId, refundRequestId),
+        isNull(notifications.readAt)
+      )
+    )
+    .run();
 }

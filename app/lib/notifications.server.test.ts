@@ -2,10 +2,12 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { createTestDb, seedBaseData } from "~/test/setup";
 import * as schema from "~/db/schema";
-import { NotificationKind, UserRole } from "~/db/schema";
+import { NotificationKind, RefundStatus, UserRole } from "~/db/schema";
 import {
   countUnreadNotifications,
   listNotifications,
+  markRefundRequestNotificationsRead,
+  notifyRefundRequestDecided,
   notifyRefundRequestOpened,
 } from "./notifications.server";
 
@@ -41,6 +43,22 @@ function addRefundRequest(buyerId: number) {
     .values({ purchaseId: purchase.id, reason: "Not for me." })
     .returning()
     .get();
+}
+
+/** A Platform Admin's decision on a Refund Request, straight into the table. */
+function decide(
+  refundRequestId: number,
+  status: RefundStatus.Approved | RefundStatus.Declined,
+  platformAdminId: number
+) {
+  db.update(schema.refunds)
+    .set({
+      status,
+      resolvedAt: NOW.toISOString(),
+      resolvedByUserId: platformAdminId,
+    })
+    .where(eq(schema.refunds.id, refundRequestId))
+    .run();
 }
 
 describe("Refund Request opened", () => {
@@ -120,6 +138,75 @@ describe("Refund Request opened", () => {
   });
 });
 
+describe("Refund Request decided", () => {
+  it("tells the buyer their Refund Request was approved, linking to the course page", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    const refundRequest = addRefundRequest(base.user.id);
+    decide(refundRequest.id, RefundStatus.Approved, pat.id);
+
+    notifyRefundRequestDecided(db, refundRequest.id, NOW);
+
+    expect(listNotifications(db, base.user.id, NOW)).toEqual([
+      {
+        id: expect.any(Number),
+        kind: NotificationKind.RefundRequestDecided,
+        sentence: "Your Refund Request for Test Course was approved",
+        link: "/courses/test-course",
+        createdAt: NOW.toISOString(),
+        isUnread: true,
+      },
+    ]);
+  });
+
+  it("tells the buyer their Refund Request was declined", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    const refundRequest = addRefundRequest(base.user.id);
+    decide(refundRequest.id, RefundStatus.Declined, pat.id);
+
+    notifyRefundRequestDecided(db, refundRequest.id, NOW);
+
+    expect(listNotifications(db, base.user.id, NOW)).toMatchObject([
+      {
+        kind: NotificationKind.RefundRequestDecided,
+        sentence: "Your Refund Request for Test Course was declined",
+        link: "/courses/test-course",
+      },
+    ]);
+  });
+
+  it("tells nobody but the buyer", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    const sam = addPerson("Sam", UserRole.Admin);
+    const refundRequest = addRefundRequest(base.user.id);
+    decide(refundRequest.id, RefundStatus.Approved, pat.id);
+
+    notifyRefundRequestDecided(db, refundRequest.id, NOW);
+
+    expect(listNotifications(db, pat.id, NOW)).toEqual([]);
+    expect(listNotifications(db, sam.id, NOW)).toEqual([]);
+    expect(listNotifications(db, base.instructor.id, NOW)).toEqual([]);
+  });
+
+  it("gives a Platform Admin who decides their own Refund Request none", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    const refundRequest = addRefundRequest(pat.id);
+    decide(refundRequest.id, RefundStatus.Declined, pat.id);
+
+    notifyRefundRequestDecided(db, refundRequest.id, NOW);
+
+    expect(listNotifications(db, pat.id, NOW)).toEqual([]);
+  });
+
+  it("refuses a Refund Request nobody has decided", () => {
+    const refundRequest = addRefundRequest(base.user.id);
+
+    expect(() =>
+      notifyRefundRequestDecided(db, refundRequest.id, NOW)
+    ).toThrow("has not been decided");
+    expect(listNotifications(db, base.user.id, NOW)).toEqual([]);
+  });
+});
+
 describe("the Unread count", () => {
   it("is zero for a person with no Notifications", () => {
     expect(countUnreadNotifications(db, base.user.id, NOW)).toBe(0);
@@ -150,6 +237,55 @@ describe("listing Notifications", () => {
       "Refund Request from Ben for Test Course",
       "Refund Request from Test User for Test Course",
     ]);
+  });
+});
+
+describe("marking a Refund Request's Notifications read", () => {
+  it("marks every Platform Admin's copy read and keeps it in their list", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    const sam = addPerson("Sam", UserRole.Admin);
+    const refundRequest = addRefundRequest(base.user.id);
+    notifyRefundRequestOpened(db, refundRequest.id, NOW);
+
+    markRefundRequestNotificationsRead(db, refundRequest.id, NOW);
+
+    for (const platformAdmin of [pat, sam]) {
+      expect(countUnreadNotifications(db, platformAdmin.id, NOW)).toBe(0);
+      expect(listNotifications(db, platformAdmin.id, NOW)).toMatchObject([
+        {
+          sentence: "Refund Request from Test User for Test Course",
+          isUnread: false,
+        },
+      ]);
+    }
+  });
+
+  it("leaves Notifications about other Refund Requests Unread", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    const ben = addPerson("Ben", UserRole.Student);
+    const decided = addRefundRequest(base.user.id);
+    const stillOpen = addRefundRequest(ben.id);
+    notifyRefundRequestOpened(db, decided.id, NOW);
+    notifyRefundRequestOpened(db, stillOpen.id, NOW);
+
+    markRefundRequestNotificationsRead(db, decided.id, NOW);
+
+    expect(
+      listNotifications(db, pat.id, NOW)
+        .filter((notification) => notification.isUnread)
+        .map((notification) => notification.sentence)
+    ).toEqual(["Refund Request from Ben for Test Course"]);
+  });
+
+  it("leaves the buyer's Notification about the decision Unread", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    const refundRequest = addRefundRequest(base.user.id);
+    decide(refundRequest.id, RefundStatus.Approved, pat.id);
+    notifyRefundRequestDecided(db, refundRequest.id, NOW);
+
+    markRefundRequestNotificationsRead(db, refundRequest.id, NOW);
+
+    expect(countUnreadNotifications(db, base.user.id, NOW)).toBe(1);
   });
 });
 
