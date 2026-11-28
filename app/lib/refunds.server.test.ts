@@ -15,6 +15,12 @@ import {
   raiseRefundRequest,
 } from "./refunds.server";
 import {
+  getNote,
+  isBookmarked,
+  saveNote,
+  toggleBookmark,
+} from "./bookmarks-and-notes.server";
+import {
   fakeNotifications,
   type FakeNotifications,
 } from "./notifications.fake.server";
@@ -298,6 +304,20 @@ describe("approving a Refund Request", () => {
       amountRefunded: 7900,
       resolvedByUserId: platformAdmin.id,
     });
+  });
+
+  it("keeps the buyer's Bookmarks and Notes", async () => {
+    const purchase = buyForSelf(base.user.id);
+    const at = { userId: base.user.id, lessonId: lessonIds[0] };
+    toggleBookmark(db, at, NOW);
+    saveNote(db, at, "Come back to this", NOW);
+    const id = await raise(purchase.id, base.user.id);
+
+    const result = await approveRefundRequest(db, id, platformAdmin.id, null, NOW, notifications);
+
+    expect(result.ok).toBe(true);
+    expect(isBookmarked(db, at)).toBe(true);
+    expect(getNote(db, at)?.body).toBe("Come back to this");
   });
 
   it("keeps the buyer's Enrollment if they also hold a Claimed Seat for the course", async () => {
