@@ -6,6 +6,7 @@ import { Toaster } from "sonner";
 import { getCurrentUserId, getDevCountry } from "~/lib/session";
 import { getCountryTierInfo, COUNTRIES } from "~/lib/ppp";
 import { countUnreadNotifications } from "~/lib/notifications.server";
+import { useUnreadNotificationCount } from "~/lib/unread-poll";
 import { eq, and, or, sql, desc } from "drizzle-orm";
 import { db } from "~/db";
 import {
@@ -229,8 +230,8 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
     countryTierInfo,
     countries,
     isTeamAdmin: userIsTeamAdmin,
-    unreadNotificationCount,
   } = loaderData;
+  const unreadNotificationCount = useUnreadNotificationCount(loaderData);
 
   return (
     <div className="flex h-screen overflow-hidden">
