@@ -10,6 +10,7 @@ import {
   type RenderedComment,
 } from "~/components/comment-thread";
 import { MIN_COMMENT_LENGTH, MAX_COMMENT_LENGTH } from "~/lib/comments";
+import { notifyQuestionPosted } from "~/lib/notifications.server";
 import { db } from "~/db";
 import {
   categories,
@@ -401,11 +402,16 @@ function getLessonThread(lessonId: number): ThreadComment[] {
   return topLevel.filter((c) => !c.deleted || c.replies.length > 0);
 }
 
+/**
+ * Posts a Comment and writes the Notifications it causes in one transaction,
+ * so a failure in either leaves neither behind.
+ */
 function createComment(
   userId: number,
   lessonId: number,
   parentId: number | null,
-  body: string
+  body: string,
+  now: Date
 ) {
   const trimmed = assertValidBody(body);
 
@@ -427,11 +433,25 @@ function createComment(
     }
   }
 
-  return db
-    .insert(comments)
-    .values({ userId, lessonId, parentId, body: trimmed })
-    .returning()
-    .get();
+  return db.transaction((tx) => {
+    const comment = tx
+      .insert(comments)
+      .values({
+        userId,
+        lessonId,
+        parentId,
+        body: trimmed,
+        createdAt: now.toISOString(),
+      })
+      .returning()
+      .get();
+
+    if (comment.parentId === null) {
+      notifyQuestionPosted(tx, comment.id, now);
+    }
+
+    return comment;
+  });
 }
 
 function updateComment(commentId: number, userId: number, body: string) {
@@ -904,7 +924,8 @@ export async function action({ params, request }: Route.ActionArgs) {
           currentUserId,
           lessonId,
           parsed.data.parentId ?? null,
-          parsed.data.body
+          parsed.data.body,
+          new Date()
         );
         return { ok: true };
       }

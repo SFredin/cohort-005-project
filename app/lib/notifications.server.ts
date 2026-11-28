@@ -1,8 +1,12 @@
 import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "~/db/schema";
+import { commentPath } from "~/lib/comments";
 import {
+  comments,
   courses,
+  lessons,
+  modules,
   notifications,
   purchases,
   refunds,
@@ -95,6 +99,65 @@ export function notifyRefundRequestOpened(
       link: "/admin/refunds",
       refundRequestId,
     })),
+    now
+  );
+}
+
+/**
+ * A Student posted a Question: tells the course's Instructor. Call it in the
+ * transaction that inserts the Comment. A Comment that is not a Question
+ * creates nothing.
+ */
+export function notifyQuestionPosted(
+  tx: Queryable,
+  commentId: number,
+  now: Date
+) {
+  const subject = tx
+    .select({
+      authorId: users.id,
+      authorName: users.name,
+      authorRole: users.role,
+      parentId: comments.parentId,
+      lessonId: lessons.id,
+      lessonTitle: lessons.title,
+      courseSlug: courses.slug,
+      instructorId: courses.instructorId,
+    })
+    .from(comments)
+    .innerJoin(users, eq(comments.userId, users.id))
+    .innerJoin(lessons, eq(comments.lessonId, lessons.id))
+    .innerJoin(modules, eq(lessons.moduleId, modules.id))
+    .innerJoin(courses, eq(modules.courseId, courses.id))
+    .where(eq(comments.id, commentId))
+    .get();
+
+  if (!subject) {
+    throw new Error(`Comment ${commentId} not found.`);
+  }
+
+  // Only a Question tells the Instructor: later Replies in its thread don't,
+  // and neither does a top-level Comment by the Instructor or a Platform Admin.
+  const isQuestion =
+    subject.parentId === null &&
+    subject.authorId !== subject.instructorId &&
+    subject.authorRole !== UserRole.Admin;
+  if (!isQuestion) return;
+
+  createNotifications(
+    tx,
+    [
+      {
+        recipientId: subject.instructorId,
+        kind: NotificationKind.QuestionPosted,
+        sentence: `${subject.authorName} asked a Question on ${subject.lessonTitle}`,
+        link: commentPath({
+          courseSlug: subject.courseSlug,
+          lessonId: subject.lessonId,
+          commentId,
+        }),
+      },
+    ],
     now
   );
 }
