@@ -7,6 +7,7 @@ import { getCurrentUserId } from "~/lib/session";
 import { resolveCountry } from "~/lib/country.server";
 import { parseParams, parseFormData } from "~/lib/validation";
 import { getSeatAvailability } from "~/lib/refunds.server";
+import { notifySeatClaimed } from "~/lib/notifications.server";
 import { Card, CardContent } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { Ticket, AlertCircle, CheckCircle2, Globe } from "lucide-react";
@@ -95,19 +96,29 @@ function redeemCoupon(
     };
   }
 
-  db.update(coupons)
-    .set({
-      redeemedByUserId: userId,
-      redeemedAt: new Date().toISOString(),
-    })
-    .where(eq(coupons.id, coupon.id))
-    .run();
+  // The claim, the Enrollment and the Team Admin's Notification commit or roll
+  // back together.
+  const enrollment = db.transaction((tx) => {
+    const now = new Date();
 
-  const enrollment = db
-    .insert(enrollments)
-    .values({ userId, courseId: coupon.courseId })
-    .returning()
-    .get();
+    tx.update(coupons)
+      .set({
+        redeemedByUserId: userId,
+        redeemedAt: now.toISOString(),
+      })
+      .where(eq(coupons.id, coupon.id))
+      .run();
+
+    const enrollment = tx
+      .insert(enrollments)
+      .values({ userId, courseId: coupon.courseId })
+      .returning()
+      .get();
+
+    notifySeatClaimed(tx, coupon.id, now);
+
+    return enrollment;
+  });
 
   return { ok: true, enrollment };
 }
