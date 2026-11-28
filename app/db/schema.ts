@@ -42,6 +42,16 @@ export enum TeamMemberRole {
   Member = "member",
 }
 
+// One per event in the catalog. It picks the icon; approved and declined share
+// RefundRequestDecided.
+export enum NotificationKind {
+  RefundRequestOpened = "refund_request_opened",
+  RefundRequestDecided = "refund_request_decided",
+  SeatClaimed = "seat_claimed",
+  QuestionPosted = "question_posted",
+  ReplyPosted = "reply_posted",
+}
+
 // ─── Tables ───
 
 export const users = sqliteTable("users", {
@@ -374,3 +384,32 @@ export const videoWatchEvents = sqliteTable("video_watch_events", {
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
 });
+
+// A message kept for one person. Only app/lib/notifications.server.ts reads or
+// writes this table.
+export const notifications = sqliteTable(
+  "notifications",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    // Deleting a person deletes their Notifications. The only cascade in the
+    // schema.
+    recipientId: integer("recipient_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull().$type<NotificationKind>(),
+    // The finished text and the URL path, written once at creation and never
+    // rebuilt from the names they came from.
+    sentence: text("sentence").notNull(),
+    link: text("link").notNull(),
+    // Filled only on RefundRequestOpened, so deciding the request can mark
+    // every Platform Admin's copy read. Does not cascade.
+    refundRequestId: integer("refund_request_id").references(() => refunds.id),
+    createdAt: text("created_at").notNull(),
+    // Null while Unread. Set once and never cleared.
+    readAt: text("read_at"),
+  },
+  (table) => [
+    index("notifications_recipient_idx").on(table.recipientId, table.createdAt),
+    index("notifications_refund_request_idx").on(table.refundRequestId),
+  ]
+);

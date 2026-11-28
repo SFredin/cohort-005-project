@@ -14,6 +14,7 @@ import {
   QuestionType,
   TeamMemberRole,
 } from "../app/db/schema";
+import { notifyRefundRequestOpened } from "../app/lib/notifications.server";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -65,6 +66,7 @@ async function seed() {
 
   // Drop and recreate tables for a clean seed
   sqlite.exec(`
+    DROP TABLE IF EXISTS notifications;
     DROP TABLE IF EXISTS comments;
     DROP TABLE IF EXISTS course_ratings;
     DROP TABLE IF EXISTS video_watch_events;
@@ -2772,14 +2774,21 @@ This course is still in draft while the cluster examples are rewritten against t
       updatedAt: daysAgo(6),
     })
     .run();
-  db.insert(schema.refunds)
+  const liamRefundRequest = db
+    .insert(schema.refunds)
     .values({
       purchaseId: liamPurchase.id,
       status: RefundStatus.Open,
       reason: "Bought the wrong one, I meant the advanced course.",
       requestedAt: daysAgo(4),
     })
-    .run();
+    .returning()
+    .get();
+  notifyRefundRequestOpened(
+    db,
+    liamRefundRequest.id,
+    new Date(liamRefundRequest.requestedAt)
+  );
 
   console.log("Created Liam's Refund Request.");
 
@@ -2787,14 +2796,21 @@ This course is still in draft while the cluster examples are rewritten against t
   // A Team Licence with no Claimed Seats, so a Platform Admin can approve it.
   // Its Seats are on hold while the request is open.
 
-  db.insert(schema.refunds)
+  const martaRefundRequest = db
+    .insert(schema.refunds)
     .values({
       purchaseId: novakLicence.purchase.id,
       status: RefundStatus.Open,
       reason: "Our design team was reorganised and nobody needs these seats now.",
       requestedAt: daysAgo(1),
     })
-    .run();
+    .returning()
+    .get();
+  notifyRefundRequestOpened(
+    db,
+    martaRefundRequest.id,
+    new Date(martaRefundRequest.requestedAt)
+  );
 
   console.log("Created Marta's Refund Request on her Team Licence.");
 
@@ -2852,6 +2868,7 @@ This course is still in draft while the cluster examples are rewritten against t
   console.log(
     `  Teams: ${countRows(schema.teams)}, coupons: ${countRows(schema.coupons)} (${countRows(schema.coupons, isNotNull(schema.coupons.redeemedByUserId))} redeemed)`
   );
+  console.log(`  Notifications: ${countRows(schema.notifications)}`);
 }
 
 seed().catch(console.error);

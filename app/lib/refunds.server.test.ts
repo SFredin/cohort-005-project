@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { createTestDb, seedBaseData } from "~/test/setup";
 import * as schema from "~/db/schema";
 import { LessonProgressStatus, RefundStatus, UserRole } from "~/db/schema";
@@ -14,6 +14,10 @@ import {
   listTeamLicences,
   raiseRefundRequest,
 } from "./refunds.server";
+import {
+  countUnreadNotifications,
+  listNotifications,
+} from "./notifications.server";
 
 type TestDb = ReturnType<typeof createTestDb>;
 
@@ -500,5 +504,70 @@ describe("listing Refund Requests", () => {
       { seatCount: 2, claimedSeatCount: 1, canRequestRefund: false },
       { seatCount: 2, claimedSeatCount: 0, canRequestRefund: true },
     ]);
+  });
+});
+
+describe("Notifications when a Refund Request is raised", () => {
+  it("gives every Platform Admin one, saying who the buyer is and which course", () => {
+    const secondPlatformAdmin = db
+      .insert(schema.users)
+      .values({ name: "Sam Admin", email: "sam@example.com", role: UserRole.Admin })
+      .returning()
+      .get();
+    const purchase = buyForSelf(base.user.id);
+
+    raise(purchase.id, base.user.id);
+
+    for (const recipient of [platformAdmin, secondPlatformAdmin]) {
+      expect(listNotifications(db, recipient.id, NOW)).toMatchObject([
+        {
+          sentence: "Refund Request from Test User for Test Course",
+          link: "/admin/refunds",
+          createdAt: NOW.toISOString(),
+          isUnread: true,
+        },
+      ]);
+    }
+  });
+
+  it("gives the buyer none", () => {
+    const purchase = buyForSelf(base.user.id);
+
+    raise(purchase.id, base.user.id);
+
+    expect(listNotifications(db, base.user.id, NOW)).toEqual([]);
+  });
+
+  it("gives a buyer who is a Platform Admin none for their own request", () => {
+    const purchase = buyForSelf(platformAdmin.id);
+
+    raise(purchase.id, platformAdmin.id);
+
+    expect(listNotifications(db, platformAdmin.id, NOW)).toEqual([]);
+  });
+
+  it("gives nobody one when the Refund Request is refused", () => {
+    const purchase = buyForSelf(base.user.id, 15);
+
+    const result = raiseRefundRequest(db, purchase.id, base.user.id, "Nope.", NOW);
+
+    expect(result.ok).toBe(false);
+    expect(countUnreadNotifications(db, platformAdmin.id, NOW)).toBe(0);
+  });
+
+  it("raises nothing at all when the Notifications can't be written", () => {
+    const purchase = buyForSelf(base.user.id);
+    db.run(sql`
+      CREATE TRIGGER notifications_fail BEFORE INSERT ON notifications
+      BEGIN SELECT RAISE(ABORT, 'notifications are down'); END
+    `);
+
+    expect(() =>
+      raiseRefundRequest(db, purchase.id, base.user.id, "Nope.", NOW)
+    ).toThrow("notifications are down");
+
+    // No Open Refund Request was left behind: the buyer can still raise one.
+    expect(checkRefundRequest(db, purchase.id, base.user.id, NOW).ok).toBe(true);
+    expect(countUnreadNotifications(db, platformAdmin.id, NOW)).toBe(0);
   });
 });
