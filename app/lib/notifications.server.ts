@@ -4,6 +4,7 @@ import * as schema from "~/db/schema";
 import { commentPath } from "~/lib/comments";
 import {
   comments,
+  coupons,
   courses,
   lessons,
   modules,
@@ -99,6 +100,56 @@ export function notifyRefundRequestOpened(
       link: "/admin/refunds",
       refundRequestId,
     })),
+    now
+  );
+}
+
+/**
+ * A Student claimed a Seat: tells the Team Admin who bought its Team Licence,
+ * unless that Team Admin is the one who claimed it.
+ * Call it in the transaction that claims the Seat, after the claim is written,
+ * so the count includes it.
+ */
+export function notifySeatClaimed(tx: Queryable, seatId: number, now: Date) {
+  const subject = tx
+    .select({
+      teamLicenceId: purchases.id,
+      teamAdminId: purchases.userId,
+      studentId: users.id,
+      studentName: users.name,
+      courseTitle: courses.title,
+    })
+    .from(coupons)
+    .innerJoin(purchases, eq(coupons.purchaseId, purchases.id))
+    .innerJoin(users, eq(coupons.redeemedByUserId, users.id))
+    .innerJoin(courses, eq(purchases.courseId, courses.id))
+    .where(eq(coupons.id, seatId))
+    .get();
+
+  if (!subject) {
+    throw new Error(`Claimed Seat ${seatId} not found.`);
+  }
+  if (subject.studentId === subject.teamAdminId) return;
+
+  const seats = tx
+    .select({
+      total: sql<number>`count(*)`,
+      claimed: sql<number>`count(${coupons.redeemedAt})`,
+    })
+    .from(coupons)
+    .where(eq(coupons.purchaseId, subject.teamLicenceId))
+    .get();
+
+  createNotifications(
+    tx,
+    [
+      {
+        recipientId: subject.teamAdminId,
+        kind: NotificationKind.SeatClaimed,
+        sentence: `${subject.studentName} claimed a Seat on ${subject.courseTitle} (${seats?.claimed ?? 0} of ${seats?.total ?? 0} claimed)`,
+        link: "/team",
+      },
+    ],
     now
   );
 }
