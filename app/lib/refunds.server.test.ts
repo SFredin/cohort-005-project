@@ -571,3 +571,161 @@ describe("Notifications when a Refund Request is raised", () => {
     expect(countUnreadNotifications(db, platformAdmin.id, NOW)).toBe(0);
   });
 });
+
+describe("Notifications when a Refund Request is decided", () => {
+  it("tells the buyer their Refund Request was approved, linking to the course page", () => {
+    const purchase = buyForSelf(base.user.id);
+    const id = raise(purchase.id, base.user.id);
+
+    approveRefundRequest(db, id, platformAdmin.id, null, NOW);
+
+    expect(listNotifications(db, base.user.id, NOW)).toMatchObject([
+      {
+        sentence: "Your Refund Request for Test Course was approved",
+        link: "/courses/test-course",
+        createdAt: NOW.toISOString(),
+        isUnread: true,
+      },
+    ]);
+  });
+
+  it("tells the buyer their Refund Request was declined", () => {
+    const purchase = buyForSelf(base.user.id);
+    const id = raise(purchase.id, base.user.id);
+
+    declineRefundRequest(db, id, platformAdmin.id, "Past half way.", NOW);
+
+    expect(listNotifications(db, base.user.id, NOW)).toMatchObject([
+      {
+        sentence: "Your Refund Request for Test Course was declined",
+        link: "/courses/test-course",
+        isUnread: true,
+      },
+    ]);
+  });
+
+  it.each([
+    ["approving", (id: number, deciderId: number) =>
+      approveRefundRequest(db, id, deciderId, null, NOW)],
+    ["declining", (id: number, deciderId: number) =>
+      declineRefundRequest(db, id, deciderId, "Past half way.", NOW)],
+  ])(
+    "marks every Platform Admin's Notification about the request read on %s, and keeps it in their list",
+    (_decision, decide) => {
+      const secondPlatformAdmin = db
+        .insert(schema.users)
+        .values({ name: "Sam Admin", email: "sam@example.com", role: UserRole.Admin })
+        .returning()
+        .get();
+      const purchase = buyForSelf(base.user.id);
+      const id = raise(purchase.id, base.user.id);
+
+      decide(id, platformAdmin.id);
+
+      // The decider's own copy and the other Platform Admin's: nothing new,
+      // nothing Unread, and the record that the request came in is still there.
+      for (const recipient of [platformAdmin, secondPlatformAdmin]) {
+        expect(listNotifications(db, recipient.id, NOW)).toMatchObject([
+          {
+            sentence: "Refund Request from Test User for Test Course",
+            isUnread: false,
+          },
+        ]);
+        expect(listNotifications(db, recipient.id, NOW)).toHaveLength(1);
+      }
+    }
+  );
+
+  it("leaves Notifications about other Refund Requests Unread", () => {
+    const ben = addLearner("Ben");
+    const decided = raise(buyForSelf(base.user.id).id, base.user.id);
+    raise(buyForSelf(ben.id).id, ben.id);
+
+    approveRefundRequest(db, decided, platformAdmin.id, null, NOW);
+
+    expect(
+      listNotifications(db, platformAdmin.id, NOW)
+        .filter((notification) => notification.isUnread)
+        .map((notification) => notification.sentence)
+    ).toEqual(["Refund Request from Ben for Test Course"]);
+  });
+
+  it("has already given the buyer their Notification when it hands back the email, so a failed send loses nothing", () => {
+    const purchase = buyForSelf(base.user.id);
+    const id = raise(purchase.id, base.user.id);
+
+    // The module never sends: it returns the email for the caller to send
+    // after the commit. Here nobody sends it.
+    const result = declineRefundRequest(db, id, platformAdmin.id, "Past half way.", NOW);
+
+    if (!result.ok) throw new Error(result.error);
+    expect(result.email.subject).toBe("Refund declined — Test Course");
+    expect(countUnreadNotifications(db, base.user.id, NOW)).toBe(1);
+  });
+
+  it("leaves no Notification and marks nothing read when a Team Licence with a Claimed Seat can't be approved", () => {
+    const priya = addLearner("Priya");
+    const { purchase, seats } = buySeats(priya.id, 2);
+    const id = raise(purchase.id, priya.id);
+    claimSeat(seats[0].id, addLearner("Ben").id);
+
+    const result = approveRefundRequest(db, id, platformAdmin.id, null, NOW);
+
+    expect(result.ok).toBe(false);
+    expect(listNotifications(db, priya.id, NOW)).toEqual([]);
+    expect(countUnreadNotifications(db, platformAdmin.id, NOW)).toBe(1);
+  });
+
+  it("leaves no Notification and marks nothing read when a decline has no note", () => {
+    const purchase = buyForSelf(base.user.id);
+    const id = raise(purchase.id, base.user.id);
+
+    const result = declineRefundRequest(db, id, platformAdmin.id, "  ", NOW);
+
+    expect(result.ok).toBe(false);
+    expect(listNotifications(db, base.user.id, NOW)).toEqual([]);
+    expect(countUnreadNotifications(db, platformAdmin.id, NOW)).toBe(1);
+  });
+
+  it("tells the buyer once when a second Platform Admin decides too late", () => {
+    const purchase = buyForSelf(base.user.id);
+    const id = raise(purchase.id, base.user.id);
+    approveRefundRequest(db, id, platformAdmin.id, null, NOW);
+
+    declineRefundRequest(db, id, platformAdmin.id, "Too late.", NOW);
+
+    expect(
+      listNotifications(db, base.user.id, NOW).map((notification) => notification.sentence)
+    ).toEqual(["Your Refund Request for Test Course was approved"]);
+  });
+
+  it("gives a Platform Admin who decides their own Refund Request no new Notification", () => {
+    const purchase = buyForSelf(platformAdmin.id);
+    const id = raise(purchase.id, platformAdmin.id);
+
+    approveRefundRequest(db, id, platformAdmin.id, null, NOW);
+
+    expect(listNotifications(db, platformAdmin.id, NOW)).toEqual([]);
+  });
+
+  it("decides nothing at all when the Notification can't be written", () => {
+    const purchase = buyForSelf(base.user.id);
+    const id = raise(purchase.id, base.user.id);
+    db.run(sql`
+      CREATE TRIGGER notifications_fail BEFORE INSERT ON notifications
+      BEGIN SELECT RAISE(ABORT, 'notifications are down'); END
+    `);
+
+    expect(() =>
+      approveRefundRequest(db, id, platformAdmin.id, null, NOW)
+    ).toThrow("notifications are down");
+
+    // Still an Open Refund Request, with the buyer's Enrollment intact and the
+    // Platform Admin's Notification still waiting.
+    expect(
+      listRefundRequestsForReview(db, RefundStatus.Open, NOW).map((r) => r.id)
+    ).toEqual([id]);
+    expect(isEnrolled(base.user.id)).toBe(true);
+    expect(countUnreadNotifications(db, platformAdmin.id, NOW)).toBe(1);
+  });
+});

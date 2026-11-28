@@ -17,7 +17,11 @@ import {
   RefundStatus,
 } from "~/db/schema";
 import { formatPrice } from "~/lib/utils";
-import { notifyRefundRequestOpened } from "~/lib/notifications.server";
+import {
+  markRefundRequestNotificationsRead,
+  notifyRefundRequestDecided,
+  notifyRefundRequestOpened,
+} from "~/lib/notifications.server";
 import {
   REFUND_COMPLETION_LIMIT,
   REFUND_WATCH_LIMIT_SECONDS,
@@ -686,6 +690,8 @@ export function approveRefundRequest(
       .where(eq(refunds.id, refundRequestId))
       .run();
 
+    recordDecisionInNotifications(tx, refundRequestId, now);
+
     return {
       ok: true,
       email: buildDecisionEmail(tx, purchase, RefundStatus.Approved, note),
@@ -729,6 +735,8 @@ export function declineRefundRequest(
       .where(eq(refunds.id, refundRequestId))
       .run();
 
+    recordDecisionInNotifications(tx, refundRequestId, now);
+
     return {
       ok: true,
       email: buildDecisionEmail(
@@ -739,6 +747,21 @@ export function declineRefundRequest(
       ),
     };
   });
+}
+
+/**
+ * What a decision does to Notifications: the buyer is told, and every Platform
+ * Admin's Notification that the request came in is marked read, because the
+ * work is done. Runs in the decision's transaction, after the decision is
+ * recorded, so it commits or rolls back with it and never waits on the email.
+ */
+function recordDecisionInNotifications(
+  tx: Tx,
+  refundRequestId: number,
+  now: Date
+) {
+  notifyRefundRequestDecided(tx, refundRequestId, now);
+  markRefundRequestNotificationsRead(tx, refundRequestId, now);
 }
 
 /** The email the buyer gets once their Refund Request is decided. */
